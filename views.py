@@ -1,20 +1,32 @@
+##################
+### imports    ###
+##################
 from functools import wraps
+from datetime import datetime
 from flask import Flask, flash, redirect, render_template, \
     request, session, url_for, g
 from flask.ext.sqlalchemy import SQLAlchemy
+from sqlalchemy.exc import IntegrityError
 
-from forms import AddTaskForm
+from forms import AddTaskForm, RegisterForm, LoginForm
 
-# config
 
+
+##################
+### config     ###
+##################
 app = Flask(__name__)
 
 # _config is _config.py in the root directory
 app.config.from_object('_config')
 db = SQLAlchemy(app)
 
-from models import Task
-# helper functions
+from models import Task, User
+
+
+#######################
+### helper function ###
+#######################
 
 
 def login_required(test):
@@ -28,10 +40,19 @@ def login_required(test):
     return wrap
 
 
-# route handlers
+def flash_errors(form):
+    for field, errors in form.errors.items():
+        for error in errors:
+            flash(u"Error in the %s field -%s" % (
+                getattr(form, field).label.text, error), 'error')
+
+######################
+### route handlers ###
+######################
 @app.route('/logout/')
 def logout():
     session.pop('logged_in', None)
+    session.pop('user_id', None)
     flash('Goodbye!')
     return redirect(url_for('login'))
 
@@ -39,16 +60,31 @@ def logout():
 @app.route('/', methods=['GET', 'POST'])
 def login():
     error = None
+    form = LoginForm(request.form)
+    print "name = ", form.name
+    print "password = ", form.password
     if request.method == 'POST':
-        if request.form['username'] != app.config['USERNAME'] \
-           or request.form['password'] != app.config['PASSWORD']:
-            error = 'Invalid Credentials. Please try again.'
-            return render_template('login.html', error=error)
+        if form.validate_on_submit():
+            u = User.query.filter_by(
+                name=request.form['name'],
+                password=request.form['password']
+            ).first()
+            if u is None:
+                error = 'Invalid username or password.'
+                return render_template(
+                    'login.html',
+                    form=form,
+                    error=error
+                )
+            else:
+                session['logged_in'] = True
+                session['user_id'] = u.id
+                flash('You are logged in')
+                return redirect(url_for('tasks'))
         else:
-            session['logged_in'] = True
-            flash('Welcome!')
-            return redirect(url_for('tasks'))
-    return render_template('login.html')
+            return render_template('login.html', form=form, error=error)
+    if request.method == 'GET':
+        return render_template('login.html', form=form)
 
 
 @app.route('/tasks/')
@@ -67,41 +103,33 @@ def tasks():
 
 
 # Add new tasks
-'''
 @app.route('/add/', methods=['GET', 'POST'])
 @login_required
 def new_task():
+    error = None
     form = AddTaskForm(request.form)
     if request.method == 'POST':
-        if form.validate_on_submit():
+        print "Post"
+        if form.validate_on_submit:
             new_task = Task(
                 form.name.data,
                 form.due_date.data,
                 form.priority.data,
-                '1'
+                datetime.utcnow(),
+                '1',
+                session['user_id']
             )
             db.session.add(new_task)
             db.session.commit()
             flash('New entry was successfully posted. Thanks.')
-    return redirect(url_for('tasks'))
-'''
-
-@app.route('/add/', methods=['GET', 'POST'])
-@login_required
-def new_task():
-    form = AddTaskForm(request.form)
-    if request.method == 'POST':
-        if form.validate_on_submit():
-            new_task = Task(
-                form.name.data,
-                form.due_date.data,
-                form.priority.data,
-                '1'
-            )
-            db.session.add(new_task)
-            db.session.commit()
-            flash('New entry was successfully posted. Thanks.')
-    return redirect(url_for('tasks'))
+            return redirect(url_for('tasks'))
+        else:
+            return render_template('tasks.html', form=form, error=error)
+        print form.errors
+        print "due_date", form.due_date.data
+        print "form.priority", form.priority.data
+    if request.method == 'GET':
+        return render_template('tasks.html', form=form)
 
 
 # Mark tasks as complete
@@ -115,6 +143,7 @@ def complete(task_id):
     flash('The task was marked as complete.')
     return redirect(url_for('tasks'))
 
+
 # Delete Tasks
 @app.route('/delete/<int:task_id>/')
 @login_required
@@ -124,3 +153,39 @@ def delete_entry(task_id):
     db.session.commit()
     flash('The task was deleted.')
     return redirect(url_for('tasks'))
+
+
+# User Registration:
+@app.route('/register/', methods=['GET', 'POST'])
+def register():
+    error = None
+    form = RegisterForm(request.form)
+    print "form from register is", form
+    if request.method == 'POST':
+        print "it's POSt"
+        if form.validate_on_submit():
+            new_user = User(
+                form.name.data,
+                form.email.data,
+                form.password.data
+            )
+            print "form.name.data is: ", form.name.data
+            print 'new user is', new_user
+            try:
+                db.session.add(new_user)
+                db.session.commit()
+                flash('Thanks for registering. Please login.')
+                return redirect(url_for('login'))
+            except IntegrityError:
+                error = 'Oh no! Username and/or email already exists'
+                return render_template('register.html', form=form, error=error)
+        else:
+            print form.errors
+            print "we're here"
+            return render_template('register.html', form=form,
+                                   error=error)
+    if request.method == 'GET':
+        return render_template('register.html', form=form)
+
+
+
